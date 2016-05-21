@@ -8,9 +8,15 @@
 -- Stability   : experimental
 -- Portability : requires GHC>6 extensions
 
-{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFunctor   #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns    #-}
 
-module Data.List.Stretchable where
+module Data.List.Stretchable ( Stretch(..)
+                             , pattern (:#)
+                             , pattern (:*)
+                             , adInfinitum
+                             ) where
 
 import Control.Applicative
 import Control.Comonad
@@ -30,12 +36,34 @@ data Stretch a = Stretch {
 adInfinitum :: Stretch a -> [a]
 adInfinitum (Stretch f c) = f ++ cycle (NE.toList c)
 
-cons :: a -> Stretch a -> Stretch a
-cons x (Stretch f c) = Stretch (x:f) c
+infixr 6 :#, :*
+
+-- | The usual Cons operation. Note: the semantics of this operator are a bit
+--   wily; used as a pattern it /always/ matches, unrolling the cyclic part as
+--   needed, whereas as a constructor it always prepends to the fixed part.
+--   It is thus not a pattern in the strict sense: you can pop an element off an
+--   “empty” list and push it back on, resulting in a 'length' of 1.
+pattern (:#) :: a -> Stretch a -> Stretch a
+pattern x :# xs <- (uncons -> (x,xs))
+ where x :# Stretch f c = Stretch (x:f) c
+
+-- | Combine an ordinary finite list of with a supply of elements
+--   (which can then be unrolled cyclically as requested).
+pattern (:*) :: [a] -> (a, [a]) -> Stretch a
+pattern xs :* cs <- Stretch xs (nEuncons' -> cs)
+ where xs :* (c,cs) = Stretch xs (c:|cs)
+
+instance (Show a) => Show (Stretch a) where
+  showsPrec p (Stretch fs (c:|cs))
+       = showParen (p>5) $ shows fs
+                         . (":*"++) . shows (c,cs)
 
 uncons :: Stretch a -> (a, Stretch a)
 uncons (Stretch (x:f) c) = (x, Stretch f c)
 uncons (Stretch [] c@(x:|_)) = (x, Stretch [] $ track c)
+
+nEuncons' :: NonEmpty a -> (a, [a])
+nEuncons' (c:|cs) = (c,cs)
 
 track :: NonEmpty a -> NonEmpty a
 track (x:|xs) = NE.fromList $ xs++[x]
@@ -53,7 +81,7 @@ instance Comonad Stretch where
   extract (Stretch _ (x:|_)) = x
   duplicate s@(Stretch [] (_:|[])) = Stretch [] (s:|[])
   duplicate s@(Stretch [] (c:|c':cs)) = case duplicate . Stretch [] $ c':|cs of
-                 Stretch [] csd -> Stretch [] $ s :| map (cons c) (NE.toList csd)
+                 Stretch [] csd -> Stretch [] $ s :| map (c:#) (NE.toList csd)
   duplicate s@(Stretch fs cs) = duplicate . Stretch (init fs) $ kcart (last fs) cs
 
 instance Applicative Stretch where
