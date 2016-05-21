@@ -25,6 +25,7 @@ import Data.Semigroup
 
 import qualified Data.List.NonEmpty as NE
 import Data.List.NonEmpty (NonEmpty(..))
+import Data.List (inits)
 import Data.Foldable
 
 data Stretch a = Stretch {
@@ -58,6 +59,15 @@ instance (Show a) => Show (Stretch a) where
        = showParen (p>5) $ shows fs
                          . (":*"++) . shows (c,cs)
 
+stretch :: Stretch a -> Stretch a
+stretch (Stretch fs (c:|cs)) = Stretch (fs++[c]) $ NE.fromList (cs++[c])
+
+loopLastFew :: Int -> [a] -> Stretch a
+loopLastFew n l
+    | (rlo@(_:_), rin) <- splitAt n $ reverse l
+                = Stretch (reverse rin) (NE.fromList $ reverse rlo)
+loopLastFew _ _ = error "Can't loop less than one element!"
+
 uncons :: Stretch a -> (a, Stretch a)
 uncons (Stretch (x:f) c) = (x, Stretch f c)
 uncons (Stretch [] c@(x:|_)) = (x, Stretch [] $ track c)
@@ -79,10 +89,10 @@ instance Monoid a => Monoid (Stretch a) where
 
 instance Comonad Stretch where
   extract (Stretch _ (x:|_)) = x
-  duplicate s@(Stretch [] (_:|[])) = Stretch [] (s:|[])
-  duplicate s@(Stretch [] (c:|c':cs)) = case duplicate . Stretch [] $ c':|cs of
-                 Stretch [] csd -> Stretch [] $ s :| map (c:#) (NE.toList csd)
-  duplicate s@(Stretch fs cs) = duplicate . Stretch (init fs) $ kcart (last fs) cs
+  duplicate s@(Stretch fs (c:|cs)) = Stretch
+                    [loopLastFew ncs l | l <- drop ncs . inits $ fs++init(c:cs)]
+                  $ NE.fromList . take ncs $ iterate stretch s
+   where ncs = 1 + length cs
 
 instance Applicative Stretch where
   pure = Stretch [] . pure
