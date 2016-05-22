@@ -31,6 +31,10 @@ import Data.Foldable
 
 import Data.String
 
+-- | List type that behaves either just like a normal finite list
+--   (in the 'Foldable' instance) or as an infinite list created by cycling
+--   a couple of elements at the end (in the 'Applicative' instance, which is
+--   similar to an infinite @ZipList@).
 data Stretch a = Stretch {
         fixedPart :: [a]
       , cyclePart :: NonEmpty a
@@ -91,7 +95,7 @@ kcart :: a -> NonEmpty a -> NonEmpty a
 kcart x xs = x :| NE.init xs
 
 instance Semigroup (Stretch a) where
-  Stretch l _ <> Stretch r rc = Stretch (l++r) rc
+  l <> Stretch r rc = Stretch (toList l++r) rc
 instance Monoid a => Monoid (Stretch a) where
   mempty = pure mempty
   mappend = (<>)
