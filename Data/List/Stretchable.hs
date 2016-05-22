@@ -115,3 +115,12 @@ instance Applicative Stretch where
          (fext,fcont) = splitAt (lx-lf) fcyc'
          (xext,xcont) = splitAt (lf-lx) xcyc'
   
+-- | Fold over the fixed part of the list plus the first cycle.
+instance Foldable Stretch where
+  foldl f i (Stretch s c) = foldl f (foldl f i s) c
+  foldr f i (Stretch s c) = foldr f (foldr f i c) s
+  foldl' f i (Stretch s c) = let i' = foldl' f i s in i' `seq` foldl' f i' c
+  foldr' f i (Stretch s c) = let i' = foldr' f i c in i' `seq` foldr' f i' s
+  foldr1 f (Stretch s c) = foldr f (foldr1 f c) s
+  foldl1 f (Stretch s c) = foldl f (foldl1 f c) s
+  null _ = False
