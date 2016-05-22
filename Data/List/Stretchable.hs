@@ -106,6 +106,8 @@ instance Comonad Stretch where
   duplicate (Stretch [] cs) = Stretch [] . fmap (Stretch []) $ tracks cs
   duplicate s@(Stretch (_:fs) cs) = s :# duplicate (Stretch fs cs)
 
+-- | 'liftA2' corresponds to a 'zipWith' where the shorter list is extended
+--   to match the longer one.
 instance Applicative Stretch where
   pure = Stretch [] . pure
   Stretch fs fcyc <*> Stretch xs xcyc
@@ -129,3 +131,11 @@ instance Foldable Stretch where
   foldr1 f (Stretch s c) = foldr f (foldr1 f c) s
   foldl1 f (Stretch s c) = foldl f (foldl1 f c) s
   null _ = False
+
+-- | Due to the way the 'Applicative' instance works,
+--   'sequenceA' can be used as a properly-aligned 'transpose'.
+instance Traversable Stretch where
+  sequenceA s@(Stretch f _) = fmap recycle . sequenceA $ toList s
+   where recycle l = Stretch f' $ s'₀:|s'
+          where (f',s'₀:s') = splitAt lf l
+         lf = length f
