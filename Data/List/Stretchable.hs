@@ -82,6 +82,11 @@ nEuncons' (c:|cs) = (c,cs)
 track :: NonEmpty a -> NonEmpty a
 track (x:|xs) = NE.fromList $ xs++[x]
 
+tracks :: NonEmpty a -> NonEmpty (NonEmpty a)
+tracks xs = fmap (trimLen . NE.fromList) . trimLen . NE.tails $ NE.cycle xs
+ where trimLen :: NonEmpty b -> NonEmpty b
+       trimLen l = NE.zipWith const l xs
+
 kcart :: a -> NonEmpty a -> NonEmpty a
 kcart x xs = x :| NE.init xs
 
@@ -94,12 +99,12 @@ instance Monoid a => Monoid (Stretch a) where
 instance IsString (Stretch Char) where
   fromString s = Stretch s (' ':|[])
 
+-- | 'extract' and 'duplicate' essentially correspond to 'head' and 'List.tails'.
 instance Comonad Stretch where
+  extract (Stretch (x:_) _) = x
   extract (Stretch _ (x:|_)) = x
-  duplicate s@(Stretch fs (c:|cs)) = Stretch
-                    [loopLastFew ncs l | l <- drop ncs . List.inits $ fs++init(c:cs)]
-                  $ NE.fromList . take ncs $ iterate stretch s
-   where ncs = 1 + length cs
+  duplicate (Stretch [] cs) = Stretch [] . fmap (Stretch []) $ tracks cs
+  duplicate s@(Stretch (_:fs) cs) = s :# duplicate (Stretch fs cs)
 
 instance Applicative Stretch where
   pure = Stretch [] . pure
