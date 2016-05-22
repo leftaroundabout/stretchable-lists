@@ -8,9 +8,10 @@
 -- Stability   : experimental
 -- Portability : requires GHC>6 extensions
 
-{-# LANGUAGE DeriveFunctor   #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE ViewPatterns    #-}
+{-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE PatternSynonyms   #-}
+{-# LANGUAGE ViewPatterns      #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Data.List.Stretchable ( Stretch(..)
                              , pattern (:#)
@@ -25,8 +26,10 @@ import Data.Semigroup
 
 import qualified Data.List.NonEmpty as NE
 import Data.List.NonEmpty (NonEmpty(..))
-import Data.List (inits)
+import qualified Data.List as List
 import Data.Foldable
+
+import Data.String
 
 data Stretch a = Stretch {
         fixedPart :: [a]
@@ -59,6 +62,7 @@ instance (Show a) => Show (Stretch a) where
        = showParen (p>5) $ shows fs
                          . (":*"++) . shows (c,cs)
 
+-- | Increase the length by one.
 stretch :: Stretch a -> Stretch a
 stretch (Stretch fs (c:|cs)) = Stretch (fs++[c]) $ NE.fromList (cs++[c])
 
@@ -87,10 +91,13 @@ instance Monoid a => Monoid (Stretch a) where
   mempty = pure mempty
   mappend = (<>)
 
+instance IsString (Stretch Char) where
+  fromString s = Stretch s (' ':|[])
+
 instance Comonad Stretch where
   extract (Stretch _ (x:|_)) = x
   duplicate s@(Stretch fs (c:|cs)) = Stretch
-                    [loopLastFew ncs l | l <- drop ncs . inits $ fs++init(c:cs)]
+                    [loopLastFew ncs l | l <- drop ncs . List.inits $ fs++init(c:cs)]
                   $ NE.fromList . take ncs $ iterate stretch s
    where ncs = 1 + length cs
 
@@ -98,27 +105,13 @@ instance Applicative Stretch where
   pure = Stretch [] . pure
   Stretch fs fcyc <*> Stretch xs xcyc
      | lf>lx      = Stretch (zipWith ($) fs (xs++xext))
-                            (NE.zipWith ($) fcyc (NE.fromList $ take lxex xcont))
+                            (NE.fromList . take lcex $ zipWith ($) fcyc' xcont)
      | otherwise  = Stretch (zipWith ($) (fs++fext) xs)
-                            (NE.zipWith ($) (NE.fromList $ take lfex fcont) xcyc)
-   where lf = length fs; lfex = NE.length fcyc
-         lx = length xs; lxex = NE.length xcyc
-         (fext,fcont) = splitAt (lx-lf) . cycle $ NE.toList fcyc
-         (xext,xcont) = splitAt (lf-lx) . cycle $ NE.toList xcyc
+                            (NE.fromList . take lcex $ zipWith ($) fcont xcyc')
+   where lf = length fs; lx = length xs
+         lcex = lcm (NE.length fcyc) (NE.length xcyc)
+         fcyc' = cycle $ NE.toList fcyc
+         xcyc' = cycle $ NE.toList xcyc
+         (fext,fcont) = splitAt (lx-lf) fcyc'
+         (xext,xcont) = splitAt (lf-lx) xcyc'
   
--- instance Monoid (ExpandaList a) => Monoid (ExpandaList (ExpandaList a)) where
---   mappend (ExpandaList l lc) (ExpandaList r rc)
---              = ExpandaList
---                   ( zipWith extAppend
---                             (l++take (h₂-h₁) (cycle lc))
---                             (r++take (h₁-h₂) (cycle rc)) )
---                   ( zipWith extAppend
---                             (take (max hlc hrc) (cycle lc))
---                             (take (max hlc hrc) (cycle rc)) )
---                   
---    where maxlenL = go $ l++lc
---           where go [] = 0
---                 go (ExpandaList ln _:l') = max (length ln+1) $ go l'
---          [hl,hlc,hr,hrc] = length<$>[l,lc,r,rc]
--- 
--- instance Applicative Stretch where
