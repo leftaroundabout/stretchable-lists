@@ -9,11 +9,10 @@
 -- Portability : requires GHC>6 extensions
 
 {-# LANGUAGE DeriveFunctor     #-}
-{-# LANGUAGE PatternSynonyms   #-}
-{-# LANGUAGE ViewPatterns      #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module Data.List.Stretchable ( Stretch(..)
+module Data.List.Stretchable ( Stretch
+                             , (*:<), (*++), (>:*), (++*)
                              ) where
 
 import Prelude hiding (foldr)
@@ -23,8 +22,6 @@ import Control.Comonad
 import Control.Arrow
 
 import Data.Semigroup
-
-import qualified Data.Vector as Arr
 
 import qualified Data.List.NonEmpty as NE
 import Data.List.NonEmpty (NonEmpty(..))
@@ -39,24 +36,41 @@ import Data.String
 --   similar to an infinite @ZipList@).
 data Stretch a
      = GapStretch (NonEmpty ([a], NonEmpty a)) [a]
-     | CalcStretch Int (Arr.Vector a) (Int -> [Int])
+     | CalcStretch Int (Int -> [a])
       deriving (Functor)
 
+
+infixr 5 *:<, *++
+
+-- | Cycle a single element in front of a list.
+(*:<) :: a -> [a] -> Stretch a
+cyc *:< fin = GapStretch (([], cyc:|[]):|[]) fin
+
+-- | Cycle a couple of elements in front of a list.
+(*++) :: (a,[a]) -> [a] -> Stretch a
+(c,yc) *++ fin = GapStretch (([], c:|yc):|[]) fin
+
+infixl 5 >:*, ++*
+
+-- | Cycle a single element after a list.
+(>:*) :: [a] -> a -> Stretch a
+ini >:* cyc = GapStretch ((ini, cyc:|[]):|[]) []
+
+-- | Cycle a couple of elements behind a list.
+(++*) :: [a] -> (a,[a]) -> Stretch a
+ini ++* (c,yc) = GapStretch ((ini, c:|yc):|[]) []
+
+
 minimumLen :: Stretch a -> Int
-minimumLen (CalcStretch ml _ _) = ml
-minimumLen (GapStretch ps ll) = foldr ((+) . length . fst)
-                                      (length ll) ps
+minimumLen sl = case precomputeStretch sl of (CalcStretch ml _) -> ml
+
 
 stretchToLen :: Stretch a -> Int -> [a]
-stretchToLen (CalcStretch _ str) = str
-stretchToLen sl@(GapStretch ps ll) = doStretch
+stretchToLen sl = case precomputeStretch sl of CalcStretch _ str -> str
+
 
 precomputeStretch :: Stretch a -> Stretch a
-precomputeStretch sl = CalcStretch (minimumLen sl) (stretchToLen sl)
-
-stretchToLen :: Stretch a -> Int -> [a]
-stretchToLen (CalcStretch _ str) = str
-stretchToLen sl@(GapStretch ps ll) = doStretch
+precomputeStretch sl@(GapStretch ps ll) = CalcStretch lmin doStretch
  where lmin = minimumLen sl
        nGaps = NE.length ps
        doStretch lreq
@@ -73,6 +87,7 @@ stretchToLen sl@(GapStretch ps ll) = doStretch
                 nil = nIns`div`2 + bias
             in stretchDistrib (1-bias) ngl nil
              . stretchDistrib (1-bias) (nGaps'-ngl) (nIns-nil)
+precomputeStretch cs = cs
 
 track :: NonEmpty a -> NonEmpty a
 track (x:|xs) = NE.fromList $ xs++[x]
@@ -114,27 +129,22 @@ instance IsString (Stretch Char) where
 -- | 'liftA2' corresponds to a 'zipWith' where the shorter list is extended
 --   to match the longer one. 'pure' just repeats a single element
 --   (note that @'toList' $ pure x ≡ []@).
+--   
+--   Due to the way this instance works, 'Data.Traversable.sequenceA' can be
+--   used as a properly-aligned transpose operation.
 instance Applicative Stretch where
   pure x = GapStretch (pure ([], pure x)) []
   CalcStretch len₁ str₁ <*> CalcStretch len₂ str₂
       = CalcStretch (max len₁ len₂) (liftA2 (zipWith ($)) str₁ str₂)
   sl₁ <*> sl₂ = precomputeStretch sl₁ <*> precomputeStretch sl₂
   
-rshiftSnd :: b -> [(a,b)] -> ([(a,b)], b)
-rshiftSnd y₀ [] = ([], y₀)
-rshiftSnd y₀ ((x,y) : xys) = first ((x,y₀):) $ rshiftSnd y xys
-  
 -- | Fold over the fixed part of the list.
 instance Foldable Stretch where
-  foldr f i (GapStretch ((pf₀,_):|[]) fin)
-           = foldr f (foldr f i fin) pf₀
+  foldr f i (GapStretch ((pf₀,_):|[]) fin) = foldr f (foldr f i fin) pf₀
   foldr f i (GapStretch ((pf₀,_):|((pf₁,pc₁):ps)) fin)
            = foldr f (foldr f i $ GapStretch ((pf₁,pc₁):|ps) fin) pf₀
+  foldr f i (CalcStretch len str) = foldr f i $ str len
 --  null (GapStretch (([],_):|[]) []) = True
 --  null (CalcStretch 0 _) = True
 --  null _ = False
 -- 
--- | Due to the way the 'Applicative' instance works,
---   'sequenceA' can be used as a properly-aligned 'transpose'.
-instance Traversable Stretch where
-  sequenceA (GapStretch f _) = 
