@@ -14,15 +14,17 @@
 {-# LANGUAGE FlexibleInstances #-}
 
 module Data.List.Stretchable ( Stretch(..)
-                             , pattern (:#)
-                             , pattern (:*)
-                             , adInfinitum
                              ) where
+
+import Prelude hiding (foldr)
 
 import Control.Applicative
 import Control.Comonad
+import Control.Arrow
 
 import Data.Semigroup
+
+import qualified Data.Vector as Arr
 
 import qualified Data.List.NonEmpty as NE
 import Data.List.NonEmpty (NonEmpty(..))
@@ -31,57 +33,46 @@ import Data.Foldable
 
 import Data.String
 
--- | List type that behaves either just like a normal finite list
---   (in the 'Foldable' instance) or as an infinite list created by cycling
---   a couple of elements at the end (in the 'Applicative' instance, which is
+-- | List type that behaves as something between a normal finite list
+--   (WRT the 'Foldable' instance) or as an infinite list created by cycling
+--   a couple of elements in the list (WRT the 'Applicative' instance, which is
 --   similar to an infinite @ZipList@).
-data Stretch a = Stretch {
-        fixedPart :: [a]
-      , cyclePart :: NonEmpty a
-      }
+data Stretch a
+     = GapStretch (NonEmpty ([a], NonEmpty a)) [a]
+     | CalcStretch Int (Arr.Vector a) (Int -> [Int])
       deriving (Functor)
 
-adInfinitum :: Stretch a -> [a]
-adInfinitum (Stretch f c) = f ++ cycle (NE.toList c)
+minimumLen :: Stretch a -> Int
+minimumLen (CalcStretch ml _ _) = ml
+minimumLen (GapStretch ps ll) = foldr ((+) . length . fst)
+                                      (length ll) ps
 
-infixr 6 :#, :*
+stretchToLen :: Stretch a -> Int -> [a]
+stretchToLen (CalcStretch _ str) = str
+stretchToLen sl@(GapStretch ps ll) = doStretch
 
--- | The usual Cons operation. Note: the semantics of this operator are a bit
---   wily; used as a pattern it /always/ matches, unrolling the cyclic part as
---   needed, whereas as a constructor it always prepends to the fixed part.
---   It is thus not a pattern in the strict sense: you can pop an element off an
---   “empty” list and push it back on, resulting in a 'length' of 1.
-pattern (:#) :: a -> Stretch a -> Stretch a
-pattern x :# xs <- (uncons -> (x,xs))
- where x :# Stretch f c = Stretch (x:f) c
+precomputeStretch :: Stretch a -> Stretch a
+precomputeStretch sl = CalcStretch (minimumLen sl) (stretchToLen sl)
 
--- | Combine an ordinary finite list of with a supply of elements
---   (which can then be unrolled cyclically as requested).
-pattern (:*) :: [a] -> (a, [a]) -> Stretch a
-pattern xs :* cs <- Stretch xs (nEuncons' -> cs)
- where xs :* (c,cs) = Stretch xs (c:|cs)
-
-instance (Show a) => Show (Stretch a) where
-  showsPrec p (Stretch fs (c:|cs))
-       = showParen (p>5) $ shows fs
-                         . (":*"++) . shows (c,cs)
-
--- | Increase the length by one.
-stretch :: Stretch a -> Stretch a
-stretch (Stretch fs (c:|cs)) = Stretch (fs++[c]) $ NE.fromList (cs++[c])
-
-loopLastFew :: Int -> [a] -> Stretch a
-loopLastFew n l
-    | (rlo@(_:_), rin) <- splitAt n $ reverse l
-                = Stretch (reverse rin) (NE.fromList $ reverse rlo)
-loopLastFew _ _ = error "Can't loop less than one element!"
-
-uncons :: Stretch a -> (a, Stretch a)
-uncons (Stretch (x:f) c) = (x, Stretch f c)
-uncons (Stretch [] c@(x:|_)) = (x, Stretch [] $ track c)
-
-nEuncons' :: NonEmpty a -> (a, [a])
-nEuncons' (c:|cs) = (c,cs)
+stretchToLen :: Stretch a -> Int -> [a]
+stretchToLen (CalcStretch _ str) = str
+stretchToLen sl@(GapStretch ps ll) = doStretch
+ where lmin = minimumLen sl
+       nGaps = NE.length ps
+       doStretch lreq
+          | lreq > lmin 
+              = foldr (++) ll
+                  $ zipWith (\ncyc (fix,loop)
+                              -> fix++take ncyc (cycle $ NE.toList loop))
+                         (stretchDistrib 0 nGaps (lreq-lmin) [])
+                         (NE.toList ps)
+          | otherwise    = take lreq $ doStretch lmin
+       stretchDistrib _ 1 nIns = (nIns:)
+       stretchDistrib bias nGaps' nIns
+          = let ngl = nGaps'`div`2 + bias
+                nil = nIns`div`2 + bias
+            in stretchDistrib (1-bias) ngl nil
+             . stretchDistrib (1-bias) (nGaps'-ngl) (nIns-nil)
 
 track :: NonEmpty a -> NonEmpty a
 track (x:|xs) = NE.fromList $ xs++[x]
@@ -95,51 +86,55 @@ kcart :: a -> NonEmpty a -> NonEmpty a
 kcart x xs = x :| NE.init xs
 
 instance Semigroup (Stretch a) where
-  l <> Stretch r rc = Stretch (toList l++r) rc
+  GapStretch prep₁ lpf₁ <> GapStretch ((p₂f₀,p₂c₀):|p₂s) lpf₂
+        = GapStretch (prep₁<>((lpf₁++p₂f₀,p₂c₀):|p₂s)) lpf₂
+  CalcStretch len₁ str₁ <> CalcStretch len₂ str₂
+        = CalcStretch (len₁+len₂)
+                      (\l -> let ll = (l*len₁)`div`(len₁+len₂)
+                             in str₁ ll ++ str₂ (l-ll) )
+  sl₁ <> sl₂ = precomputeStretch sl₁ <> precomputeStretch sl₂
 instance Monoid a => Monoid (Stretch a) where
   mempty = pure mempty
   mappend = (<>)
 
+-- | Stretch at each space character, or else extend the end of the string with spaces.
 instance IsString (Stretch Char) where
-  fromString s = Stretch s (' ':|[])
-
--- | 'extract' and 'duplicate' essentially correspond to 'head' and 'List.tails'.
-instance Comonad Stretch where
-  extract (Stretch (x:_) _) = x
-  extract (Stretch _ (x:|_)) = x
-  duplicate (Stretch [] cs) = Stretch [] . fmap (Stretch []) $ tracks cs
-  duplicate s@(Stretch (_:fs) cs) = s :# duplicate (Stretch fs cs)
+  fromString "" = GapStretch (("",' ':|[]):|[]) ""
+  fromString (' ':s) = case fs s of
+              (preps,fin) -> GapStretch ((" ", ' ':|[]):|preps) fin
+   where fs "" = ([], "")
+         fs (' ':s) = first ((" ", ' ':|[]):) $ fs s
+         fs (c:s) = case fs s of
+                 ([], fin) -> ([], c:fin)
+                 ((p₀f,p₀c):ps,fin) -> ((c:p₀f,p₀c) : ps, fin)
+  fromString (c:s) = case fromString s of
+                 GapStretch ((p₀f,p₀c):|ps) fin
+                     -> GapStretch ((c:p₀f,p₀c) :| ps) fin
 
 -- | 'liftA2' corresponds to a 'zipWith' where the shorter list is extended
---   to match the longer one.
+--   to match the longer one. 'pure' just repeats a single element
+--   (note that @'toList' $ pure x ≡ []@).
 instance Applicative Stretch where
-  pure = Stretch [] . pure
-  Stretch fs fcyc <*> Stretch xs xcyc
-     | lf>lx      = Stretch (zipWith ($) fs (xs++xext))
-                            (NE.fromList . take lcex $ zipWith ($) fcyc' xcont)
-     | otherwise  = Stretch (zipWith ($) (fs++fext) xs)
-                            (NE.fromList . take lcex $ zipWith ($) fcont xcyc')
-   where lf = length fs; lx = length xs
-         lcex = lcm (NE.length fcyc) (NE.length xcyc)
-         fcyc' = cycle $ NE.toList fcyc
-         xcyc' = cycle $ NE.toList xcyc
-         (fext,fcont) = splitAt (lx-lf) fcyc'
-         (xext,xcont) = splitAt (lf-lx) xcyc'
+  pure x = GapStretch (pure ([], pure x)) []
+  CalcStretch len₁ str₁ <*> CalcStretch len₂ str₂
+      = CalcStretch (max len₁ len₂) (liftA2 (zipWith ($)) str₁ str₂)
+  sl₁ <*> sl₂ = precomputeStretch sl₁ <*> precomputeStretch sl₂
   
--- | Fold over the fixed part of the list plus the first cycle.
+rshiftSnd :: b -> [(a,b)] -> ([(a,b)], b)
+rshiftSnd y₀ [] = ([], y₀)
+rshiftSnd y₀ ((x,y) : xys) = first ((x,y₀):) $ rshiftSnd y xys
+  
+-- | Fold over the fixed part of the list.
 instance Foldable Stretch where
-  foldl f i (Stretch s c) = foldl f (foldl f i s) c
-  foldr f i (Stretch s c) = foldr f (foldr f i c) s
-  foldl' f i (Stretch s c) = let i' = foldl' f i s in i' `seq` foldl' f i' c
-  foldr' f i (Stretch s c) = let i' = foldr' f i c in i' `seq` foldr' f i' s
-  foldr1 f (Stretch s c) = foldr f (foldr1 f c) s
-  foldl1 f (Stretch s c) = foldl f (foldl1 f c) s
-  null _ = False
-
+  foldr f i (GapStretch ((pf₀,_):|[]) fin)
+           = foldr f (foldr f i fin) pf₀
+  foldr f i (GapStretch ((pf₀,_):|((pf₁,pc₁):ps)) fin)
+           = foldr f (foldr f i $ GapStretch ((pf₁,pc₁):|ps) fin) pf₀
+--  null (GapStretch (([],_):|[]) []) = True
+--  null (CalcStretch 0 _) = True
+--  null _ = False
+-- 
 -- | Due to the way the 'Applicative' instance works,
 --   'sequenceA' can be used as a properly-aligned 'transpose'.
 instance Traversable Stretch where
-  sequenceA s@(Stretch f _) = fmap recycle . sequenceA $ toList s
-   where recycle l = Stretch f' $ s'₀:|s'
-          where (f',s'₀:s') = splitAt lf l
-         lf = length f
+  sequenceA (GapStretch f _) = 
