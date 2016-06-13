@@ -13,6 +13,7 @@
 
 module Data.List.Stretchable ( Stretch
                              , (*:<), (*++), (>:*), (++*)
+                             , stretchToLen
                              ) where
 
 import Prelude hiding (foldr)
@@ -65,16 +66,16 @@ minimumLen :: Stretch a -> Int
 minimumLen sl = case precomputeStretch sl of (CalcStretch ml _) -> ml
 
 
-stretchToLen :: Stretch a -> Int -> [a]
-stretchToLen sl = case precomputeStretch sl of CalcStretch _ str -> str
+stretchToLen :: Int -> Stretch a -> [a]
+stretchToLen l sl = case precomputeStretch sl of CalcStretch _ str -> str l
 
 
 precomputeStretch :: Stretch a -> Stretch a
 precomputeStretch sl@(GapStretch ps ll) = CalcStretch lmin doStretch
- where lmin = minimumLen sl
+ where lmin = length sl
        nGaps = NE.length ps
        doStretch lreq
-          | lreq > lmin 
+          | lreq >= lmin 
               = foldr (++) ll
                   $ zipWith (\ncyc (fix,loop)
                               -> fix++take ncyc (cycle $ NE.toList loop))
@@ -82,9 +83,10 @@ precomputeStretch sl@(GapStretch ps ll) = CalcStretch lmin doStretch
                          (NE.toList ps)
           | otherwise    = take lreq $ doStretch lmin
        stretchDistrib _ 1 nIns = (nIns:)
+       stretchDistrib _ n _ | n<1     = error "No stretch to be distributed!"
        stretchDistrib bias nGaps' nIns
-          = let ngl = nGaps'`div`2 + bias
-                nil = nIns`div`2 + bias
+          = let ngl = (nGaps'+bias)`div`2
+                nil = (nIns+bias)`div`2
             in stretchDistrib (1-bias) ngl nil
              . stretchDistrib (1-bias) (nGaps'-ngl) (nIns-nil)
 precomputeStretch cs = cs
@@ -135,7 +137,7 @@ instance IsString (Stretch Char) where
 instance Applicative Stretch where
   pure x = GapStretch (pure ([], pure x)) []
   CalcStretch len₁ str₁ <*> CalcStretch len₂ str₂
-      = CalcStretch (max len₁ len₂) (liftA2 (zipWith ($)) str₁ str₂)
+      = CalcStretch (max len₁ len₂) (\l -> zipWith ($) (str₁ l) (str₂ l))
   sl₁ <*> sl₂ = precomputeStretch sl₁ <*> precomputeStretch sl₂
   
 -- | Fold over the fixed part of the list.
